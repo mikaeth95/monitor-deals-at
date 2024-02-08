@@ -1,0 +1,173 @@
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
+import time
+import logging
+
+# Define constants for the Discord Webhook
+WEBHOOK = "https://discord.com/api/webhooks/1204898188943958016/OBWQnVhkUe2H8ynJS6EOpDCmyz45BiBnpuCuyrXduYF3Zf3ivsqd-qmxt37Lji5snOHK"
+AVATAR_URL = "https://i.imgur.com/MCCSOcE.png"
+COLOUR = "16777215"
+
+# Initialize an empty list to store monitored offers and detect changes
+INSTOCK = {}
+
+# Initialize error counter
+error_count = 0
+
+# Function for the monitor start message
+def monitor_started_message():
+    """
+    Display a message when the monitor is successfully started.
+    """
+    print('''\n-----------------------------------------
+--- DEALS AT MONITOR HAS STARTED ---
+-----------------------------------------\n''')
+    logging.info(msg='Successfully started monitor')
+
+def scrape_preisjaeger():
+    url = 'https://www.preisjaeger.at/deals-neu'
+    html = requests.get(url)
+    soup = BeautifulSoup(html.content, 'html.parser')  # Hier soup definieren
+
+    deals = []
+
+    for deal in soup.select('.threadGrid-title'):
+        title_elem = deal.find('a')
+        title = title_elem.get('title') if title_elem else "N/A"
+        link = title_elem.get('href') if title_elem else "N/A"
+
+        # Aktualisierter Problembereich
+        price_elem = deal.find_next('div', class_='threadItemCard-price')
+        price = price_elem.text.strip() if price_elem else "N/A"
+
+        prev_price_elem = deal.find_next('span', class_='text--lineThrough')
+        previous_price = prev_price_elem.text.strip() if prev_price_elem else "N/A"
+
+        discount_elem = deal.find_next('span', class_='text--color-charcoal')
+        discount_percentage = discount_elem.text.strip() if discount_elem else "N/A"
+
+        ship_cost_elem = deal.find_next('span', class_='icon--truck')
+        shipping_cost = ship_cost_elem.find_next('span').text.strip() if ship_cost_elem else "N/A"
+
+        merchant_elem = deal.find_next('button', class_='text--b')
+        merchant = merchant_elem.text.strip() if merchant_elem else "N/A"
+
+        time_elem = deal.find_next('span', class_='metaRibbon size--all-s lbox--v-1 boxAlign-ai--all-c overflow--wrap-off space--l-3 text--color-greyShade')
+        posting_time = time_elem.text.strip() if time_elem else "N/A"
+
+        thumbnail_elem = deal.find_previous('img', class_='thread-image')
+        thumbnail = thumbnail_elem['src'] if thumbnail_elem else None
+
+        deals.append({
+            'title': title,
+            'link': link,
+            'thumbnail': thumbnail,
+            'price': price,
+            'previous_price': previous_price,
+            'discount_percentage': discount_percentage,
+            'shipping_cost': shipping_cost,
+            'merchant': merchant,
+            'posting_time': posting_time,
+        })
+
+    return deals
+
+
+def main():
+    global error_count
+
+    # Call the function for the monitor start message
+    monitor_started_message()
+
+    deals = scrape_preisjaeger()
+
+    for deal in deals:
+        comparison(deal)
+        time.sleep(5)  # Delay of 5 seconds
+
+        # Check if the maximum consecutive error count has been reached
+        if error_count >= 3:
+            print(f"Maximum consecutive errors reached ({error_count}). Exiting the program.")
+            break
+
+def discord_webhook(title, url, thumbnail, price, previous_price, discount_percentage, shipping_cost, merchant, posting_time, colour):
+    global error_count
+
+    data = {
+        "content": "New offer found:",
+        "username": "Secret Society Bot",
+        "avatar_url": AVATAR_URL,
+        "embeds": [{
+            "title": title,
+            "url": url,
+            "thumbnail": {"url": thumbnail},
+            "timestamp": str(datetime.utcnow()),
+            "color": int(colour),
+            "fields": [
+                {"name": "Price", "value": price},
+                {"name": "Previous Price", "value": previous_price},
+                {"name": "Discount Percentage", "value": discount_percentage},
+                {"name": "Shipping Cost", "value": shipping_cost},
+                {"name": "Merchant", "value": merchant},
+                {"name": "Posting Time", "value": posting_time},
+            ]
+        }]
+    }
+
+    headers = {"Content-Type": "application/json"}
+
+    result = requests.post(WEBHOOK, json=data, headers=headers)
+
+    try:
+        result.raise_for_status()
+    except requests.exceptions.HTTPError as err:
+        print(f"Error sending to Discord. Status code: {result.status_code}")
+        print(f"Discord response: {result.text}")
+        print(f"More details: {err}")
+        # Increment the error counter
+        error_count += 1
+    else:
+        print(f"Payload successfully delivered, Code: {result.status_code}")
+        # Reset the error counter since the delivery was successful
+        error_count = 0
+
+def comparison(item):
+    global error_count
+
+    if item['title'] in INSTOCK:
+        if item['price'] != INSTOCK[item['title']]['price']:
+            INSTOCK[item['title']] = item
+            discord_webhook(
+                title=item['title'],
+                url=item['link'],
+                thumbnail=item['thumbnail'],
+                price=item['price'],
+                previous_price=item['previous_price'],
+                discount_percentage=item['discount_percentage'],
+                shipping_cost=item['shipping_cost'],
+                merchant=item['merchant'],
+                posting_time=item['posting_time'],
+                colour=COLOUR
+            )
+            # Reset the error counter since the delivery was successful
+            error_count = 0
+    else:
+        INSTOCK[item['title']] = item
+        discord_webhook(
+            title=item['title'],
+            url=item['link'],
+            thumbnail=item['thumbnail'],
+            price=item['price'],
+            previous_price=item['previous_price'],
+            discount_percentage=item['discount_percentage'],
+            shipping_cost=item['shipping_cost'],
+            merchant=item['merchant'],
+            posting_time=item['posting_time'],
+            colour=COLOUR
+        )
+        # Reset the error counter since the delivery was successful
+        error_count = 0
+
+if __name__ == '__main__':
+    main()
