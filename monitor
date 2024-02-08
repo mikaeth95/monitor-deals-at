@@ -5,7 +5,7 @@ import time
 import logging
 
 # Define constants for the Discord Webhook
-WEBHOOK = "https://discord.com/api/webhooks/1204898188943958016/OBWQnVhkUe2H8ynJS6EOpDCmyz45BiBnpuCuyrXduYF3Zf3ivsqd-qmxt37Lji5snOHK"
+WEBHOOK = "https://discord.com/api/webhooks/WEBHOOK"
 AVATAR_URL = "https://i.imgur.com/MCCSOcE.png"
 COLOUR = "16777215"
 
