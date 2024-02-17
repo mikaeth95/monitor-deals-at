@@ -1,0 +1,335 @@
+import os
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
+import time
+import json
+import random
+import logging
+import cfscrape
+from seleniumbase import SB  # Import SB for UC Mode
+
+current_directory = os.getcwd()
+print(f"Current Directory: {current_directory}")
+
+# Define constants for the Discord Webhook
+WEBHOOK = "https://discord.com/api/webhooks/1204898188943958016/OBWQnVhkUe2H8ynJS6EOpDCmyz45BiBnpuCuyrXduYF3Zf3ivsqd-qmxt37Lji5snOHK"
+AVATAR_URL = "https://i.imgur.com/MCCSOcE.png"
+COLOUR = "16777215"
+
+# Initialize an empty list to store monitored offers and detect changes
+INSTOCK = {}
+
+# Initialize error counter
+error_count = 0
+
+log_directory = 'C:/Users/Administrator/desktop/monitors/deals_at/logs'
+log_path = os.path.join(log_directory, 'deals-monitor.log')
+logging.basicConfig(filename=log_path, filemode='a', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# Function for the start message of the monitor
+def monitor_started_message():
+    """
+    Display a message when the monitor is successfully started.
+    """
+    print('''\n-----------------------------------------
+--- DEALS AT MONITOR HAS STARTED ---
+-----------------------------------------\n''')
+    logging.info(msg='Successfully started monitor')
+
+time.sleep(random.uniform(5, 10))
+
+def open_the_turnstile_page(sb):
+    sb.driver.uc_open_with_reconnect(
+        "https://seleniumbase.io/apps/turnstile", reconnect_time=2.5,
+    )
+
+def click_turnstile_and_verify(sb):
+    sb.driver.uc_switch_to_frame("iframe")
+    sb.driver.uc_click("span.mark")
+    sb.assert_element("img#captcha-success", timeout=3.33)
+
+# Function for scraping Preisjaeger
+def scrape_preisjaeger(sb, log_counter):
+    url = 'https://www.preisjaeger.at/deals-neu'
+    try:
+        sb.open(url)
+        time.sleep(random.uniform(10, 15))
+
+        html_content = sb.get_page_source()
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        deals = []
+
+        for deal in soup.select('.threadGrid'):
+            merchant_elem = deal.select_one('.threadGrid-title .link')
+            merchant = merchant_elem.text.strip() if merchant_elem else "N/A"
+            title_elem = deal.find('strong', class_='thread-title').find('a')
+            title = title_elem.get('title') if title_elem else "N/A"
+            link = title_elem.get('href') if title_elem else "N/A"
+
+            price_container = deal.find('span', class_='vAlign--all-tt')
+            price_elem = price_container.find('span', class_='threadItemCard-price') if price_container else None
+            price = price_elem.text.strip() if price_elem else "N/A"
+
+            prev_price_elem = deal.find('span', class_='mute--text')
+            previous_price = prev_price_elem.text.strip() if prev_price_elem else "N/A"
+
+            discount_elem = deal.find('span', class_='text--color-charcoal')
+            discount_percentage = discount_elem.text.strip() if discount_elem else "N/A"
+
+            time_elem = deal.find('span', class_='metaRibbon')
+            posting_time = time_elem.find('span').text.strip() if time_elem else "N/A"
+
+            thumbnail_elem = deal.find('img', class_='thread-image')
+            thumbnail = thumbnail_elem['src'] if thumbnail_elem and 'src' in thumbnail_elem.attrs else None
+
+            user_html_elem = deal.find('div', class_='userHtml-content')
+            additional_info = user_html_elem.text.strip() if user_html_elem else "N/A"
+
+            info_elem = deal.find('div', class_='userHtml-content')
+            info = info_elem.text.strip() if info_elem else "N/A"
+
+            deals.append({
+                'title': title,
+                'link': link,
+                'thumbnail': thumbnail,
+                'price': price,
+                'previous_price': previous_price,
+                'discount_percentage': discount_percentage,
+                'merchant': merchant,
+                'posting_time': posting_time,
+                'additional_info': additional_info,
+                'info': info,
+                'price_html_elem': price_elem
+            })
+
+        return deals, log_counter, soup
+
+    except Exception as e:
+        print(f"An error occurred during web scraping: {e}")
+        logging.error(f"Error occurred during web scraping: {e}")
+
+        # Log the HTML content of the page
+        logging.info("HTML content of the page:")
+        logging.info(sb.get_page_source())
+
+        return deals, log_counter, soup
+
+time.sleep(random.uniform(10, 15))
+# Function for the main logic of the monitor
+# ... (existing code)
+
+def main():
+    global error_count
+    global log_counter
+
+    # Display the monitor started message
+    monitor_started_message()
+
+    # Initialize the counter
+    log_counter = 1
+
+    # Inside your main() function, call is_cloudflare_active() with the URL
+    url = "https://www.preisjaeger.at/deals-neu"  # Set your target URL here
+    if is_cloudflare_active(url):
+        print("Perform actions for Cloudflare-protected site")
+        
+        # Your Cloudflare-specific actions here
+        attempts = 0
+        while attempts < 3:
+            try:
+                # Set up the Chrome WebDriver with UC Mode
+                with SB(uc=True, test=True) as sb:
+                    open_the_turnstile_page(sb)
+                    click_turnstile_and_verify(sb)
+                    break  # Exit the loop if Cloudflare challenge is successfully completed
+            except Exception as e:
+                print(f"Failed to complete Cloudflare challenge. Retrying ({attempts + 1}/3)")
+                attempts += 1
+                time.sleep(10)  # Delay between attempts
+        else:
+            print("Could not complete Cloudflare challenge after 3 attempts. Exiting.")
+            return
+
+    else:
+        print("Perform actions for non-Cloudflare site")
+        # Your non-Cloudflare-specific actions here
+
+    # Continue with the rest of your code (e.g., scraping and monitoring)
+    with SB(uc=True) as driver:
+        while True:
+            try:
+                deals, log_counter, soup = scrape_preisjaeger(driver, log_counter)
+                for deal in deals:
+                    comparison(deal, soup)
+                    time.sleep(5)
+                    if error_count >= 20:
+                        print(f"Maximum consecutive errors reached ({error_count}). Exiting the program.")
+                        logging.error(f"Maximum consecutive errors reached ({error_count}). Exiting the program.")
+                        break
+                time.sleep(60)
+                
+            except Exception as e:
+                print(f"An error occurred: {e}")
+                logging.error(f"An error occurred: {e}")
+                # Increase the error counter
+                error_count += 1
+                # Check if the maximum consecutive error count has been reached
+                if error_count >= 20:
+                    print(f"Maximum consecutive errors reached ({error_count}). Exiting the program.")
+                    logging.error(f"Maximum consecutive errors reached ({error_count}). Exiting the program.")
+                    break
+
+            time.sleep(60)  # Pause for 60 seconds before the next iteration
+
+# ... (existing code)
+
+
+# Custom Exception for maximum error count reached
+class MaximumErrorsReached(Exception):
+    pass
+
+# Function for the Discord Webhook
+def discord_webhook(title, url, thumbnail, price, previous_price, discount_percentage, merchant, posting_time, info, colour):
+    global error_count
+
+    print("Debugging Discord Webhook:")
+    print(f"Title: {title}")
+    print(f"URL: {url}")
+    print(f"Thumbnail: {thumbnail}")
+    print(f"Price: {price}")
+    print(f"Previous Price: {previous_price}")
+    print(f"Discount Percentage: {discount_percentage}")
+    print(f"Info: {info}")
+    print(f"Merchant: {merchant}")
+    print(f"Posting Time: {posting_time}")
+    print(f"Colour: {colour}")
+
+    # Check if a field is None or an empty string, replace it with "N/A"
+    data_fields = [
+        {"name": "New Price", "value": f"`{price}`", "inline": True},
+        {"name": "Old Price", "value": f"~~`{previous_price}`~~", "inline": True},
+        {"name": "Discount", "value": f"`{discount_percentage}`", "inline": True},
+        {"name": "Link", "value": f"[Click Me]({url})", "inline": True},
+        {"name": "Merchant", "value": f"`{merchant}`", "inline": True},
+        {"name": "Posting Time", "value": f"`{posting_time}`", "inline": True},
+        {"name": "Info", "value": f"{info}", "inline": False},
+    ]
+
+    for field in data_fields:
+        if field["value"] is None or field["value"] == "":
+            field["value"] = "N/A"
+
+    data = {
+        "content": "",
+        "username": "Secret Society",
+        "avatar_url": AVATAR_URL,
+        "embeds": [{
+            "title": title,
+            "url": url,
+            "thumbnail": {"url": thumbnail},
+            "timestamp": str(datetime.utcnow()),
+            "color": int(colour),
+            "fields": data_fields,
+            "footer": {
+                "text": "Made with ❤️ by Secret Society",
+                "icon_url": "https://cdn.discordapp.com/attachments/875120960662016061/994213431211200512/ss_logo.png?ex=65d5e7e9&is=65c372e9&hm=fe4d719c2a2e27bdfdcf85b18eb9c3adbac98aed82d53e1068047d31dd408369&"
+            }
+        }]
+    }
+
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        result = requests.post(WEBHOOK, json=data, headers=headers)
+        result.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending to Discord. Details: {e}")
+        logging.error(f"Error sending to Discord. Details: {e}")
+        # Increase the error counter
+        error_count += 1
+        # Check if the maximum consecutive error count has been reached
+        if error_count >= 20:
+            raise MaximumErrorsReached("Maximum consecutive errors reached")
+    else:
+        print(f"Payload successfully delivered, Code: {result.status_code}")
+        # Reset the error counter since the delivery was successful
+        error_count = 0
+
+# Funktion zum Debuggen des HTML-Codes für den Preis
+def debug_price_html_code(price_html_elem):
+    """
+    Debugging function to print the HTML code of the price element.
+    """
+    print("Debugging Price HTML Code:")
+    price_html_code = str(price_html_elem) if price_html_elem else "N/A"
+    print(f"Price HTML Code:\n{price_html_code}")
+
+# Function for comparing offers
+def comparison(item, soup):
+    global error_count
+
+    print("Debugging Comparison:")
+    print(f"Item Title: {item['title']}")
+    print(f"Item Price: {item['price']}")
+    print(f"Item Info: {item['info']}")
+
+    # Debugging price HTML Code
+    price_html_elem = item.get('price_html_elem')
+    debug_price_html_code(price_html_elem)
+
+    # Check if the title is in INSTOCK dictionary
+    instock_item = INSTOCK.get(item['title'])
+
+    if instock_item:
+        instock_price = instock_item.get('price', "N/A")
+        print(f"INSTOCK Title: {instock_item.get('title')}")
+        print(f"INSTOCK Price: {instock_price}")
+
+        # Compare prices
+        if item['price'] != instock_price:
+            INSTOCK[item['title']] = item
+            discord_webhook(
+                title=item['title'],
+                url=item['link'],
+                thumbnail=item['thumbnail'],
+                price=item['price'],
+                previous_price=item['previous_price'],
+                discount_percentage=item['discount_percentage'],
+                info=item['info'],
+                merchant=item['merchant'],
+                posting_time=item['posting_time'],
+                colour=COLOUR
+            )
+            # Reset the error counter since the delivery was successful
+            error_count = 0
+    else:
+        INSTOCK[item['title']] = item
+
+        # Display HTML for N/A values
+        for key, value in item.items():
+            if value == "N/A":
+                html_element = soup.select_one(f".threadGrid {key}")
+                html_code = html_element.prettify() if html_element else "N/A"
+                print(f"{key} HTML Code:\n{html_code}")
+
+        discord_webhook(
+            title=item['title'],
+            url=item['link'],
+            thumbnail=item['thumbnail'],
+            price=item['price'],
+            previous_price=item['previous_price'],
+            discount_percentage=item['discount_percentage'],
+            info=item['info'],
+            merchant=item['merchant'],
+            posting_time=item['posting_time'],
+            colour=COLOUR
+        )
+
+if __name__ == "__main__":
+    try:
+        main()
+    except MaximumErrorsReached:
+        print("Maximum consecutive errors reached. Exiting the program.")
+        logging.error("Maximum consecutive errors reached. Exiting the program.")
